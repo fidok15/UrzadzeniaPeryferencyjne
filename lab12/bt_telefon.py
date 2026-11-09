@@ -309,6 +309,10 @@ if IOB is not None:                           # delegaty IOBluetooth (klasy Obje
         def deviceInquiryComplete_error_aborted_(self, sender, error, aborted):
             self.done = True
 
+    class SdpDelegate(NSObject):
+        def sdpQueryComplete_status_(self, device, status):
+            self.status, self.done = status, True
+
     class PairDelegate(NSObject):
         def devicePairingUserConfirmationRequest_numericValue_(self, sender, value):
             self.log(f'Kod parowania {value:06d} - potwierdz go na telefonie')
@@ -357,11 +361,18 @@ class MacBackend:
         c = IOB.IOBluetoothHostController.defaultController()
         if c is None or c.addressAsString() is None:
             raise BtError('Brak adaptera Bluetooth albo brak zgody (Ustawienia > Prywatnosc > Bluetooth)')
-        self.inquiry = None
+        # IOBluetooth wola delegaty asynchronicznie (takze po stop/zakonczeniu), wiec obiekty
+        # i delegaty musza zyc do konca programu - inaczej use-after-free i SIGSEGV.
+        self.keep = []
+        self.inq_delegate = InquiryDelegate.alloc().init()
+        self.inq_delegate.found, self.inq_delegate.done = [], True
+        self.inquiry = IOB.IOBluetoothDeviceInquiry.inquiryWithDelegate_(self.inq_delegate)
+        self.inquiry.setInquiryLength_(INQUIRY_SECONDS)
+        self.inquiry.setUpdateNewDeviceNames_(True)
         return f'{c.nameAsString()} ({c.addressAsString().replace("-", ":").upper()})'
 
     def close(self):
-        if self.inquiry:
+        if not self.inq_delegate.done:
             self.inquiry.stop()
 
     def idle(self):
@@ -373,18 +384,15 @@ class MacBackend:
                       bool(d.isPaired()), bool(d.isConnected()), d.classOfDevice(), d)
 
     def discover(self, log):
-        d = InquiryDelegate.alloc().init()
+        d, inq = self.inq_delegate, self.inquiry      # jeden obiekt wyszukiwania na cala sesje
         d.found, d.done = [], False
-        self.inquiry = inq = IOB.IOBluetoothDeviceInquiry.inquiryWithDelegate_(d)
-        inq.setInquiryLength_(INQUIRY_SECONDS)
-        inq.setUpdateNewDeviceNames_(True)
+        inq.clearFoundDevices()
         r = inq.start()
         if r != 0:
             raise BtError(f'Nie mozna rozpoczac wyszukiwania {ioret(r)} '
                           '(zezwol Terminalowi na Bluetooth w Ustawieniach > Prywatnosc)')
-        pump(lambda: d.done, INQUIRY_SECONDS + 15)
-        inq.stop()
-        self.inquiry = None
+        if not pump(lambda: d.done, INQUIRY_SECONDS + 15):
+            inq.stop()
         devices = {x.addressString(): x for x in (IOB.IOBluetoothDevice.pairedDevices() or [])}
         devices.update({x.addressString(): x for x in d.found})
         return [self._device(x) for x in devices.values()]
@@ -394,6 +402,7 @@ class MacBackend:
         d.log, d.done, d.error = log, False, 0
         p = IOB.IOBluetoothDevicePair.pairWithDevice_(dev.raw)
         p.setDelegate_(d)
+        self.keep += [p, d]
         r = p.start()
         if r != 0:
             raise BtError(f'Nie mozna rozpoczac parowania {ioret(r)}')
@@ -404,20 +413,39 @@ class MacBackend:
             raise BtError(f'Parowanie nieudane {ioret(d.error)}')
 
     def connect_opp(self, dev, log):
+        raw = dev.raw
         uuid = IOB.IOBluetoothSDPUUID.uuid16_(OPP_UUID16)
-        dev.raw.performSDPQuery_(None)
-        if not pump(lambda: dev.raw.getServiceRecordForUUID_(uuid) is not None, 15):
+        if raw.getServiceRecordForUUID_(uuid) is None:
+            # Zapytanie SDP tylko gdy brak rekordu w pamieci; czekamy na jego KONIEC,
+            # bo w trakcie SDP otwarcie kanalu RFCOMM konczy sie bledem 0xE00002BC.
+            q = SdpDelegate.alloc().init()
+            q.done, q.status = False, 0
+            self.keep.append(q)
+            raw.performSDPQuery_(q)
+            pump(lambda: q.done, 20)
+        record = raw.getServiceRecordForUUID_(uuid)
+        if record is None:
             raise BtError('Urzadzenie nie ma uslugi OBEX Object Push (iPhone jej nie obsluguje)')
-        r, ch = dev.raw.getServiceRecordForUUID_(uuid).getRFCOMMChannelID_(None)
+        r, ch = record.getRFCOMMChannelID_(None)
         if r != 0:
             raise BtError(f'Brak kanalu RFCOMM w rekordzie SDP {ioret(r)}')
         log(f'OBEX Object Push na kanale RFCOMM {ch}')
-        d = RfcommDelegate.alloc().init()
-        d.buf, d.closed = bytearray(), False
-        r, chan = dev.raw.openRFCOMMChannelSync_withChannelID_delegate_(None, ch, d)
-        if r != 0:
-            raise BtError(f'Nie mozna otworzyc kanalu RFCOMM {ch}: {ioret(r)}')
-        return MacLink(dev.raw, chan, d)
+        if not raw.isConnected():
+            r = raw.openConnection()              # najpierw polaczenie radiowe (ACL)
+            log('Polaczenie ACL otwarte' if r == 0 else f'openConnection: {ioret(r)}')
+        for attempt in range(1, 4):               # telefon bywa zajety tuz po SDP/ACL - ponawiamy
+            d = RfcommDelegate.alloc().init()
+            d.buf, d.closed = bytearray(), False
+            self.keep.append(d)
+            r, chan = raw.openRFCOMMChannelSync_withChannelID_delegate_(None, ch, d)
+            if chan is not None:
+                self.keep.append(chan)
+            if r == 0:
+                return MacLink(raw, chan, d)
+            log(f'Proba {attempt}: kanal RFCOMM {ch} -> {ioret(r)}')
+            pump(lambda: False, 2)
+        raise BtError(f'Nie mozna otworzyc kanalu RFCOMM {ch}: {ioret(r)}. '
+                      'Odblokuj telefon i sprobuj ponownie; jesli dalej - usun parowanie po obu stronach i sparuj od nowa')
 
 
 def make_backend():
