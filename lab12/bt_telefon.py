@@ -15,6 +15,7 @@ iPhone nie obsluguje OBEX Object Push - odbiorca musi byc Androidem.
 import ctypes
 import mimetypes
 import queue
+import random
 import socket
 import struct
 import sys
@@ -186,6 +187,29 @@ class SOCKADDR_BTH(Structure):
 
 AF_BTH = 32
 MITM_REQUIRED_GENERAL_BONDING = 5
+AUTH_LEGACY, AUTH_OOB, AUTH_NUMERIC, AUTH_PASSKEY_NOTIFICATION, AUTH_PASSKEY = 1, 2, 3, 4, 5
+
+
+class BLUETOOTH_AUTHENTICATION_CALLBACK_PARAMS(Structure):
+    _fields_ = [('deviceInfo', BLUETOOTH_DEVICE_INFO), ('authenticationMethod', c_int),
+                ('ioCapability', c_int), ('authenticationRequirements', c_int), ('value', c_uint32)]
+
+
+class BLUETOOTH_PIN_INFO(Structure):
+    _fields_ = [('pin', c_uint8 * 16), ('pinLength', c_uint8)]
+
+
+class AUTH_RESPONSE_UNION(ctypes.Union):
+    _fields_ = [('pinInfo', BLUETOOTH_PIN_INFO), ('oobInfo', c_uint8 * 32), ('value', c_uint32)]
+
+
+class BLUETOOTH_AUTHENTICATE_RESPONSE(Structure):
+    _fields_ = [('bthAddressRemote', c_uint64), ('authMethod', c_int), ('u', AUTH_RESPONSE_UNION),
+                ('negativeResponse', c_uint8)]
+
+
+AUTH_CALLBACK = getattr(ctypes, 'WINFUNCTYPE', ctypes.CFUNCTYPE)(
+    c_int, c_void_p, ctypes.POINTER(BLUETOOTH_AUTHENTICATION_CALLBACK_PARAMS))
 OPP_GUID = (OPP_UUID16, 0, 0x1000, (0x80, 0, 0, 0x80, 0x5F, 0x9B, 0x34, 0xFB))  # 00001105-0000-1000-8000-00805F9B34FB
 
 
@@ -223,6 +247,9 @@ class WinBackend:
         bt.BluetoothFindNextDevice.argtypes = [c_void_p, c_void_p]
         bt.BluetoothFindDeviceClose.argtypes = [c_void_p]
         bt.BluetoothAuthenticateDeviceEx.argtypes = [c_void_p, c_void_p, c_void_p, c_void_p, c_int]
+        bt.BluetoothRegisterForAuthenticationEx.argtypes = [c_void_p, c_void_p, AUTH_CALLBACK, c_void_p]
+        bt.BluetoothUnregisterAuthentication.argtypes = [c_void_p]
+        bt.BluetoothSendAuthenticationResponseEx.argtypes = [c_void_p, c_void_p]
         self.k32.CloseHandle.argtypes = [c_void_p]
         self.ws2.connect.argtypes = [ctypes.c_size_t, c_void_p, c_int]
 
@@ -267,11 +294,47 @@ class WinBackend:
         return list(found.values())
 
     def pair(self, dev, log):
-        log('Okno parowania Windows: potwierdz kod na komputerze i telefonie')
-        r = self.bt.BluetoothAuthenticateDeviceEx(None, self.radio, byref(dev.raw), None,
-                                                  MITM_REQUIRED_GENERAL_BONDING)
+        """Parowanie z wlasnym callbackiem zamiast okna Windows: program sam odpowiada
+        na zadanie uwierzytelnienia (PIN dla starych telefonow, kod 6 cyfr dla SSP)."""
+        pin = f'{random.randint(0, 9999):04d}'
+
+        def on_auth(_, params):
+            prm = params.contents
+            resp = BLUETOOTH_AUTHENTICATE_RESPONSE()
+            resp.bthAddressRemote = prm.deviceInfo.Address
+            resp.authMethod = method = prm.authenticationMethod
+            if method == AUTH_LEGACY:
+                log(f'Telefon wymaga PIN-u. Wpisz na telefonie PIN: {pin}')
+                for i, ch in enumerate(pin.encode()):
+                    resp.u.pinInfo.pin[i] = ch
+                resp.u.pinInfo.pinLength = len(pin)
+            elif method == AUTH_NUMERIC:
+                log(f'Kod parowania {prm.value:06d} - potwierdz go na telefonie')
+                resp.u.value = prm.value
+            elif method == AUTH_PASSKEY_NOTIFICATION:
+                log(f'Wpisz na telefonie kod {prm.value:06d}')
+                resp.u.value = prm.value
+            else:
+                log(f'Nieobslugiwana metoda parowania {method}')
+                resp.negativeResponse = 1
+            r = self.bt.BluetoothSendAuthenticationResponseEx(self.radio, byref(resp))
+            if r != 0:
+                log(f'Odpowiedz parowania: blad Win32 {r}')
+            return 1
+
+        callback = AUTH_CALLBACK(on_auth)        # referencja musi zyc do wyrejestrowania
+        reg = c_void_p()
+        r = self.bt.BluetoothRegisterForAuthenticationEx(byref(dev.raw), byref(reg), callback, None)
         if r != 0:
-            raise BtError(f'Parowanie nieudane (blad Win32 {r})')
+            raise BtError(f'Nie mozna zarejestrowac obslugi parowania (blad Win32 {r})')
+        log('Parowanie... odblokuj telefon i obserwuj ekran / powiadomienia')
+        try:
+            r = self.bt.BluetoothAuthenticateDeviceEx(None, self.radio, byref(dev.raw), None,
+                                                      MITM_REQUIRED_GENERAL_BONDING)
+        finally:
+            self.bt.BluetoothUnregisterAuthentication(reg)
+        if r != 0:
+            raise BtError(f'Parowanie nieudane (blad Win32 {r}). Odrzucono na telefonie albo minal czas')
 
     def connect_opp(self, dev, log):
         sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
