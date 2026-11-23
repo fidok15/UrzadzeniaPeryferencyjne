@@ -9,6 +9,7 @@ Uruchomienie: python kamera.py        |  testy bez kamery: python kamera.py --te
 import os
 import subprocess
 import sys
+import threading
 import time
 import tkinter as tk
 from datetime import datetime
@@ -61,11 +62,11 @@ def stamp():
     return datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
 
 
-def save_image(img, prefix, ext="png"):
+def save_image(img, prefix, ext="png", jpeg_quality=95):
     """Zapisuje obraz w OUT_DIR, zwraca sciezke albo None."""
     os.makedirs(OUT_DIR, exist_ok=True)
     path = os.path.join(OUT_DIR, f"{prefix}_{stamp()}.{ext}")
-    return path if cv2.imwrite(path, img) else None
+    return path if cv2.imwrite(path, img, [cv2.IMWRITE_JPEG_QUALITY, int(jpeg_quality)]) else None
 
 
 def to_photo(img, max_size=PREVIEW_MAX):
@@ -101,6 +102,11 @@ class App:
         self.fps = 0.0
         self.last_t = time.time()
         self.cameras = []
+        # odczyt klatek w osobnym watku: cap.read() blokuje, a na macOS w watku GUI potrafi zawiesic Tk
+        self.cap_lock = threading.Lock()
+        self.grabber = None
+        self.latest = None
+        self.seq = self.shown_seq = 0
 
         self.preview = ttk.Label(root, text="Brak obrazu - wykryj i polacz kamere", anchor="center")
         self.preview.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
@@ -161,6 +167,9 @@ class App:
         ttk.Combobox(row, textvariable=self.photo_fmt, values=["jpg", "png", "bmp"], state="readonly",
                      width=5).pack(side="left", padx=2, pady=2)
         ttk.Button(row, text="Zrob zdjecie", command=self.take_photo).pack(side="left", fill="x", expand=True, padx=2)
+        ttk.Label(box, text="Jakosc JPEG [%]").pack(anchor="w", padx=4)
+        self.jpeg_var = tk.IntVar(value=95)
+        tk.Scale(box, variable=self.jpeg_var, from_=10, to=100, orient="horizontal", length=220).pack(fill="x", padx=4)
         row = ttk.Frame(box)
         row.pack(fill="x")
         self.video_fmt = tk.StringVar(value="mp4")
@@ -214,12 +223,26 @@ class App:
             messagebox.showerror("Kamera", f"Nie mozna otworzyc kamery {index}.")
             return
         self.apply_resolution()
+        self.latest = None
+        self.grabber = threading.Thread(target=self.grab_loop, args=(self.cap,), daemon=True)
+        self.grabber.start()
         self.conn_btn.config(text="Rozlacz")
+
+    def grab_loop(self, cap):
+        while self.cap is cap:
+            with self.cap_lock:
+                ok, frame = cap.read()
+            if ok and frame is not None:
+                self.latest = frame
+                self.seq += 1
+            else:
+                time.sleep(0.02)
 
     def disconnect(self):
         self.stop_record()
-        self.cap.release()
-        self.cap = None
+        cap, self.cap = self.cap, None
+        self.grabber.join(timeout=2)
+        cap.release()
         self.raw = self.frame = None
         self.preview.config(image="", text="Rozlaczono")
         self.conn_btn.config(text="Polacz")
@@ -232,8 +255,9 @@ class App:
             messagebox.showinfo("Kamera", "Nie mozna zmienic rozdzielczosci podczas nagrywania.")
             return
         w, h = map(int, self.res_var.get().split("x"))
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+        with self.cap_lock:
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
 
     def reset_params(self):
         for var, default in self.params.values():
@@ -250,7 +274,7 @@ class App:
         if self.frame is None:
             messagebox.showwarning("Zdjecie", "Brak obrazu z kamery.")
             return None
-        path = save_image(self.frame, prefix, self.photo_fmt.get())
+        path = save_image(self.frame, prefix, self.photo_fmt.get(), self.jpeg_var.get())
         if not path:
             messagebox.showerror("Zdjecie", "Nie udalo sie zapisac zdjecia.")
             return None
@@ -295,22 +319,19 @@ class App:
 
     # --- petla obrazu ---
     def loop(self):
-        if self.cap:
-            ok, raw = self.cap.read()
-            if ok:
-                now = time.time()
-                dt = now - self.last_t
-                self.last_t = now
-                if dt > 0:
-                    self.fps = 0.9 * self.fps + 0.1 * (1 / dt)
-                self.raw = raw
-                self.frame = self.process(raw)
-                if self.writer:
-                    self.writer.write(self.frame)
-                self.show(self.frame.copy())
-            else:
-                self.status.config(text="Blad odczytu klatki")
-        self.root.after(5, self.loop)
+        if self.cap and self.seq != self.shown_seq and self.latest is not None:
+            self.shown_seq = self.seq
+            now = time.time()
+            dt = now - self.last_t
+            self.last_t = now
+            if dt > 0:
+                self.fps = 0.9 * self.fps + 0.1 * (1 / dt)
+            self.raw = self.latest
+            self.frame = self.process(self.raw)
+            if self.writer:
+                self.writer.write(self.frame)
+            self.show(self.frame.copy())
+        self.root.after(10, self.loop)
 
     def show(self, view):
         self.overlay(view)

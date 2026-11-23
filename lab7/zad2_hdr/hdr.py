@@ -77,22 +77,23 @@ class HdrApp(App):
         except ValueError:
             messagebox.showerror("HDR", "Ekspozycje: liczby oddzielone przecinkami, np. -9,-7,-5,-3")
             return
-        old_exp = self.cap.get(cv2.CAP_PROP_EXPOSURE)
-        self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, AUTO_EXP_MANUAL)
-        self.series = []
-        for e in exposures:
-            self.status.config(text=f"Ekspozycja {e}...")
-            self.root.update_idletasks()
-            self.cap.set(cv2.CAP_PROP_EXPOSURE, e)
-            frame = None
-            for _ in range(DROP_FRAMES):
-                ok, f = self.cap.read()
-                if ok:
-                    frame = f
-            if frame is not None:
-                self.series.append(frame)
-        self.cap.set(cv2.CAP_PROP_EXPOSURE, old_exp)
-        self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, AUTO_EXP_AUTO)
+        with self.cap_lock:
+            old_exp = self.cap.get(cv2.CAP_PROP_EXPOSURE)
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, AUTO_EXP_MANUAL)
+            self.series = []
+            for e in exposures:
+                self.status.config(text=f"Ekspozycja {e}...")
+                self.root.update_idletasks()
+                self.cap.set(cv2.CAP_PROP_EXPOSURE, e)
+                frame = None
+                for _ in range(DROP_FRAMES):
+                    ok, f = self.cap.read()
+                    if ok:
+                        frame = f
+                if frame is not None:
+                    self.series.append(frame)
+            self.cap.set(cv2.CAP_PROP_EXPOSURE, old_exp)
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, AUTO_EXP_AUTO)
         self.update_label()
         means = [f.mean() for f in self.series]
         if len(means) < 2 or max(means) - min(means) < 15:
