@@ -1,0 +1,7 @@
+@echo off
+REM Windows: Python 3.9+ z python.org. Pierwsze uruchomienie instaluje OpenCV.
+cd /d "%~dp0"
+if not exist .venv python -m venv .venv
+.venv\Scripts\pip install -q -r requirements.txt
+.venv\Scripts\python kamera.py %*
+pause
