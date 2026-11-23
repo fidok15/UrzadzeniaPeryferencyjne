@@ -1,0 +1,78 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage{fontspec}
+\usepackage[polish]{babel}
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{setspace}
+\setstretch{1.3}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{amsmath}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xurl}
+
+\graphicspath{{img/}}
+\setlength{\emergencystretch}{3em}
+\captionsetup{labelsep=colon,font={small,stretch=1}}
+\captionsetup[table]{position=top}
+
+\lstset{
+  language=Python,
+  basicstyle=\ttfamily\footnotesize\setstretch{1},
+  keywordstyle=\color{teal!70!black},
+  commentstyle=\color{black!55}\itshape,
+  stringstyle=\color{red!65!black},
+  showstringspaces=false,
+  breaklines=true,
+  frame=single,
+  rulecolor=\color{black},
+  framesep=4pt,
+  xleftmargin=4pt,
+  xrightmargin=4pt,
+  aboveskip=6pt,
+  belowskip=10pt,
+}
+
+\newcommand{\przedmiot}{Urządzenia peryferyjne}
+\newcommand{\termin}{poniedziałek 23.11.2026 grupa 8.00}
+\newcommand{\temat}{Kamery cyfrowe}
+
+\newcommand{\stronatytulowa}[1]{%
+  \begin{titlepage}
+    \centering
+    \vspace*{1.2cm}
+    \colorbox{black!4}{\parbox{3.6cm}{\centering\vspace{6pt}%
+      \includegraphics[width=2.9cm]{pwr_logo_bw.png}\\[4pt]
+      {\sffamily\large\setstretch{1}Politechnika\\Wrocławska\par}\vspace{6pt}}}\par
+    \vspace{2.8cm}
+    {\large\textsc{\przedmiot}\par}
+    \vspace{0.5cm}
+    {\textsc{\termin}\par}
+    \vspace{1.2cm}
+    \rule{\linewidth}{1pt}\par
+    \vspace{0.5cm}
+    {\LARGE\bfseries\setstretch{1}\temat\\#1\par}
+    \vspace{0.4cm}
+    \rule{\linewidth}{1pt}\par
+    \vspace{0.6cm}
+    \begin{minipage}[t]{0.48\textwidth}
+      \raggedright\setstretch{1.25}
+      \emph{Autorzy:}\\
+      Iga \textsc{Wolanin} 281203\\
+      Adam \textsc{Korwin} 284455
+    \end{minipage}\hfill
+    \begin{minipage}[t]{0.48\textwidth}
+      \raggedleft\setstretch{1.25}
+      \vspace{0.3cm}
+      \emph{Prowadzący:}\\
+      dr inż. Dominik \textsc{Żelazny}
+    \end{minipage}
+    \vfill
+  \end{titlepage}
+}

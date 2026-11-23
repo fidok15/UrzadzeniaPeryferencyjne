@@ -2,7 +2,7 @@
 
 Wykrywanie kamer, polaczenie, zdjecie (jpg/png/bmp), film (mp4/avi),
 zmiana parametrow obrazu (programowe + rozdzielczosc + okno sterownika).
-Warianty zad. 2 (zad2_*/) dziedzicza po App i dokladaja build_extra()/overlay().
+Wersja macOS (macos/) dziedziczy po App; wykrywanie ruchu doklada build_extra()/overlay().
 
 Uruchomienie: python kamera.py        |  testy bez kamery: python kamera.py --test
 """
